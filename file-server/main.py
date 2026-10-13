@@ -2,7 +2,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from http import HTTPStatus
 import sys
 from datetime import datetime, timezone
-
+import json
 
 from google.cloud import storage
 from google.cloud import logging as cloud_logging
@@ -47,8 +47,18 @@ class CustomHandler(BaseHTTPRequestHandler):
 
     def serve_file(self, path: str):
         """Shared by GET and POST: parse '<bucket>/<blob>' and send the file back."""
+        
         bucket_name, _, blob_name = path.strip().lstrip("/").partition("/")
         target = f"{bucket_name}/{blob_name}"
+
+        if self.is_forbidden():
+            country = self.headers.get("X-country", "").strip()
+            self.report_forbidden(target)
+            self.send_error(
+                HTTPStatus.BAD_REQUEST,
+                f"Permission denied: requests from {country} are not allowed",
+            )
+            return
 
         if not bucket_name or not blob_name:
             self.send_error(HTTPStatus.NOT_FOUND, f"File not found: {target}")
@@ -86,44 +96,26 @@ class CustomHandler(BaseHTTPRequestHandler):
             message = self.responses.get(code, ("???",))[0]
 
         self.log_to_cloud(code, message)
+        super().send_error(code, message, explain)
 
-        # super().send_error() would write the same line to stderr through
-        # log_error(); we already printed it, so skip that duplicate.
-        self._error_logged = True
-        try:
-            super().send_error(code, message, explain)
-        finally:
-            self._error_logged = False
-
-    def log_error(self, format, *args):
-        if getattr(self, "_error_logged", False):
-            return
-        super().log_error(format, *args)
 
     def log_to_cloud(self, code, message):
-        """Log an error with a simple print and a structured Cloud Logging entry."""
-        # same format as http.server:
-        # 127.0.0.1 - - [12/Oct/2026 15:08:48] code 501, message Unsupported method ('HEAD')
-        line = (
-            f"{self.address_string()} - - [{self.log_date_time_string()}] "
-            f"code {int(code)}, message {message}"
-        )
-        print(line, flush=True)
-
+        """Log a structured Cloud Logging entry."""
         # for some malformed requests http.server fails before setting path/headers
         headers = getattr(self, "headers", None)
         try:
             cloud_logger.log_struct(
                 {
-                    "message": line,
+                    "message": f"code {int(code)}, message {message}",
                     "status": int(code),
                     "method": self.command or None,
                     "path": getattr(self, "path", None),
                     "client_ip": self.client_address[0],
+                    "country": headers.get("X-country") if headers else None,
                     "user_agent": headers.get("User-Agent") if headers else None,
                     "time": datetime.now(timezone.utc).isoformat(),
                 },
-                severity="ERROR" if code >= 500 else "WARNING",
+                severity=self.severity_for(code),
             )
         except Exception as e:
             print(f"Failed to write to Cloud Logging: {e}", flush=True)
@@ -134,7 +126,29 @@ class CustomHandler(BaseHTTPRequestHandler):
         return blob.download_as_bytes()
 
     def is_forbidden(self) -> bool:
-        return False
+        country = self.headers.get("X-country", "").strip().lower()
+        return country in FORBIDDEN_COUNTRIES
+
+    def severity_for(self, code)->str:
+        if code == HTTPStatus.BAD_REQUEST:
+            return "CRITICAL"
+        if code >=500:
+            return "ERROR"
+        return "WARNING"
+
+    def report_forbidden(self, target: str):
+        headers = getattr(self, "headers", None)
+        message = {
+            "country": headers.get("X-country", "") if headers else None,
+            "method": self.command or None,
+            "target": target or None,
+            "time": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            future = publisher.publish(topic_path, json.dumps(message).encode("utf-8"))
+            future.result(timeout=10)
+        except Exception as e:
+            print(f"Failed to publish to Pub/Sub: {e}", flush=True)
 
 
 def run(HandlerClass=CustomHandler,

@@ -1,3 +1,5 @@
+# CS528 Homework 4
+
 ## Deployment
 
 The web server runs on a Compute Engine VM with a static IP. A startup script installs the dependencies, pulls this repo, and starts the server every time the VM boots, so no manual SSH step is needed.
@@ -100,75 +102,61 @@ gcloud compute instances create $VM_NAME \
 
 The startup script takes a minute or two to install packages before the server is up.
 
-### 7. Test
+## Test
+
+There are basically two tools we use to Demonstrate the functionality of the app.
+
+1. The provided client program(`client/http-client`) by the TA.
+2. The `curl` command for Linux.
+
+All the tests run in another VM different from that runs the server.
+
+### 1. Create the VM
 
 ```bash
-IP=$(gcloud compute addresses describe $IP_NAME --region=$REGION --format="get(address)")
-
-# GET: file path in the URL, expect 200
-curl -i http://$IP:8000/$BUCKET/some-file.html
-
-# POST: file path in the body, expect 200
-curl -i -d "$BUCKET/some-file.html" http://$IP:8000/
-
-# Missing file, expect 404
-curl -i http://$IP:8000/$BUCKET/no-such-file
-
-# Other methods, expect 501
-curl -i -X PUT http://$IP:8000/$BUCKET/some-file.html
-curl -I http://$IP:8000/$BUCKET/some-file.html
+gcloud compute instances create hw4-client-vm \
+    --zone=us-central1-a \
+    --machine-type=e2-micro \
+    --image-project=ubuntu-os-cloud \
+    --image-family=ubuntu-2404-lts-amd64 \
+    --no-service-account \
+    --no-scopes
 ```
 
-Errors show up in Logs Explorer with this query:
-
-```
-logName="projects/PROJECT_ID/logs/file-server"
-```
-
-### Troubleshooting
-
-SSH into the VM, then:
-
+Then copy the client into the VM(Attention: The http-client should correspond to the kernel of the VM):
 ```bash
-# Did the startup script run without errors?
-sudo journalctl -u google-startup-scripts.service
+gcloud compute scp http-client hw4-client-vm:~ --zone=us-central1-a
 
-# Server output
-cat /var/log/file-server.log
+gcloud compute ssh hw4-client-vm --zone=us-central1-a
 
-# Does the server answer locally? If yes but not from outside, check the firewall rule.
-curl -i http://localhost:8000/$BUCKET/some-file.html
-
-# Run the startup script again without recreating the VM
-sudo google_metadata_script_runner startup
+# get the static ip
+gcloud compute addresses list
 ```
 
-### Clean up
-
-Delete the VM **and** release the IP. A reserved IP that is not attached to a VM is billed at a higher rate.
-
+Inside the VM, use the provided http client to request 100  of the cloud storage files:
 ```bash
-gcloud compute instances delete $VM_NAME --zone=$ZONE
-gcloud compute addresses delete $IP_NAME --region=$REGION
-gcloud compute firewall-rules delete allow-file-server-8000
+./http-client -d $IP -p 8000 -b $BUCKET -w $WEBDIR -n 100 -i $INDEX -t 10 -v > results.txt 2>&1
+
+./http-client -d 35.192.34.3 -b cs528-ruoxi-pagerank -w pages -n 100 -i 12000 -p 8000 -t 10 -v > results.txt 2>&1
+
+grep -c "200 OK" results.txt # the output should be #requests
 ```
 
-## Local development
 
-Locally there is no attached service account, so use one of these:
+Here are the detailed parameters for the provided http client.
 
-```bash
-# Option A: log in with your own Google account (no key file needed)
-gcloud auth application-default login
+| Short | Long | Argument | Description |
+|---|---|---|---|
+| `-h` | `--help` | | Show the help message and exit |
+| `-d` | `--domain` | `DOMAIN` | Domain to make requests to |
+| `-b` | `--bucket` | `BUCKET` | Cloud bucket containing your files. Use `none` if running locally |
+| `-w` | `--webdir` | `WEBDIR` | Directory containing your files. Use `none` if you did not make one |
+| `-n` | `--num_requests` | `NUM_REQUESTS` | Number of requests to make |
+| `-i` | `--index` | `INDEX` | Maximum existing file index |
+| `-p` | `--port` | `PORT` | Server port |
+| `-f` | `--follow` | | Follow redirects |
+| `-s` | `--ssl` | | Use HTTPS |
+| `-v` | `--verbose` | | Print the responses from the server on stdout |
+| `-r` | `--random` | `RANDOM` | Initial random seed |
+| `-t` | `--timeout` | `TIMEOUT` | Timeout in seconds for requests |
 
-# Option B: use a service account key (never commit it)
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
-```
-
-Then:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python file-server/main.py
-```
