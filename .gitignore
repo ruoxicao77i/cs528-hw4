@@ -1,4 +1,5 @@
 instructions/
 client/
 keys/
+/stress-data
 *.pdf

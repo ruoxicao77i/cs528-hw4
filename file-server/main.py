@@ -1,4 +1,4 @@
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from http import HTTPStatus
 import sys
 from datetime import datetime, timezone
@@ -152,7 +152,7 @@ class CustomHandler(BaseHTTPRequestHandler):
 
 
 def run(HandlerClass=CustomHandler,
-        ServerClass=HTTPServer,
+        ServerClass=ThreadingHTTPServer,
         protocol="HTTP/1.0", port=PORT, bind=""):
     """
     Run the HTTP server.
