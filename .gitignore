@@ -1,5 +1,8 @@
-instructions/
-client/
-keys/
-/stress-data
-*.pdf
+.venv/
+.setup-venv/
+__pycache__/
+http-client
+dump_headers.py
+client1.log
+client2.log
+nohup.out
